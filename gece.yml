@@ -2,14 +2,13 @@ name: Arama dizinini güncelle
 
 on:
   schedule:
-    - cron: '30 0 * * *'      # her gece 03:30 (Türkiye saati)
-  workflow_dispatch: {}        # Actions sekmesinden elle de çalıştırılabilir
+    - cron: '15 * * * *'      # her saat başı (:15'te)
+  workflow_dispatch: {}
   push:
     branches: [main]
-    paths: ['magaza/**', 'sync/**']
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -26,6 +25,12 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install numpy requests
+      - name: Dosyaları klasörlere diz
+        run: |
+          mkdir -p sync magaza
+          for f in sync.py satis.json; do if [ -f "$f" ]; then cp "$f" sync/; fi; done
+          for f in akilli-arama.js panel-yukleyici.html; do if [ -f "$f" ]; then cp "$f" magaza/; fi; done
+          ls sync magaza
       - name: Vektör önbelleğini geri yükle
         uses: actions/cache@v4
         with:
@@ -43,6 +48,16 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
+      - name: Depoyu canlı tut
+        if: github.event_name == 'schedule'
+        run: |
+          son=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - son )) -gt $((45*86400)) ]; then
+            date -u > .canli-tut
+            git config user.name "robocombo-arama-bot"
+            git config user.email "robocombo-arama-bot@users.noreply.github.com"
+            git add .canli-tut && git commit -m "Zamanlanmış güncellemeyi canlı tut" && git push
+          fi
 
   yayinla:
     needs: derle
