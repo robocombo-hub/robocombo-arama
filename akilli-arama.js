@@ -7,7 +7,7 @@
  * Ayarlar: window.RC_ARAMA = { veri, worker, sayfa, stil, populer }
  */
 (function(){
-  var V='[akilli-arama] v2.5';
+  var V='[akilli-arama] v2.6';
   if(window.__rcAra && window.__rcAra.dur) window.__rcAra.dur();
   var AYAR=Object.assign({
     veri:'',                       // https://<kullanici>.github.io/robocombo-arama
@@ -15,7 +15,8 @@
     sayfa:'/pages/arama',
     stil:'liste',                  // 'liste' | 'izgara' (acilir kutu gorunumu)
     populer:['Arduino Uno','Raspberry Pi 5','ESP32','Servo motor','Lipo pil','Sensör seti','Robot kiti','Jumper kablo'],
-    whatsapp:'https://wa.me/905525507626'
+    whatsapp:'https://wa.me/905525507626',
+    birlesik:false                 // true: adinda gecmeyen ama o kategorideki urunler 1. gruba katilir
   }, window.RC_ARAMA||{});
   AYAR.veri=String(AYAR.veri||'').replace(/\/$/,''); AYAR.worker=String(AYAR.worker||'').replace(/\/$/,'');
 
@@ -149,7 +150,15 @@
     function turSinifi(p,H){
       var u=urunTur(p);
       if(!u.t.length) return 1;
-      if(u.t.some(function(h){ return turEsit(h,H); })) return 2;
+      if(u.t.some(function(h){ return turEsit(h,H); })){
+        /* adi 50 karakterde kesik urun ("...Drone Motor Suru"): adin son kelimesi yaniltabilir, kategorisi aranan
+           turu hic icermiyorsa (sadece "Motor Surucu" kategorilerinde) yan urun say */
+        if(u.ad && p.ad.length>=50){
+          var kh=p.katH||(p.katH=p.kat.split('|').map(function(c){ return c&&katBas(c); }).filter(Boolean));
+          if(kh.length && !kh.some(function(h){ return turEsit(h,H); })) return 0;
+        }
+        return 2;
+      }
       return u.ad?0:1;
     }
     function kur(dizin,vekBuf){
@@ -300,11 +309,13 @@
       }
       /* Siralama (v2.5): once GRUP, grup icinde SATIS.
          Gruplar (A = aranan kelimelerin hepsi var):
-           0  rakamli model/stok kodu birebir ("mg996", "hcsr04")
-           1  aranan turun kendisi, adinda ya da tam o kategoride ("Drone Motorlari" kategorisindeki F30 dahil)
-           2  aranan tur ama baglanti zayif (kelime sadece genis bir kategoride gecer)
-           3  ayni turun baska alt turu ("drone motoru" ararken servo motor)
-           4  turu belirsiz        5  baska tur, yan urun (motor surucusu, pervane)
+           0  model/stok kodu birebir ("mg996", "hcsr04")
+           1  aranan turun kendisi ve aranan kelimelerin hepsi ADINDA ("... Drone Motoru")
+           2  aranan tur, kelimeler adinda degil ama tam o kategoride (RS2205, F50: "Drone Motorlari")
+              (AYAR.birlesik:true ile 1. grupla birlesir)
+           3  aranan tur ama baglanti zayif (kelime sadece genis bir kategoride gecer)
+           4  ayni turun baska alt turu ("drone motoru" ararken servo motor)
+           5  turu belirsiz        6  baska tur, yan urun (motor surucusu, pervane)
            9  kelimelerin bir kismi / sadece anlamca yakin (kendi icinde alaka sirasi)
          Grup icinde: once stoktakiler, sonra ciro (satis adedi x fiyat) buyukten kucuge. Cok satan ama tukenmis urun
          grubun basina cikmaz; az satan urun baska gruba dusmez, kendi grubunda asagi iner. */
@@ -320,7 +331,7 @@
         var kk=p.katK||(p.katK=p.kat.split('|').filter(Boolean).map(function(c){ return tokenlar(c.replace(/\(.*?\)/g,' ')).map(kok); }));
         return kk.some(function(ks){ return qHarf.every(function(al){ return al.some(function(q){ return ks.some(function(v){ return kokEsit(v,q); }); }); }); });
       }
-      var BANT={0:[99,0],1:[95,4],2:[90,4],3:[84,4],4:[78,5],5:[70,7],9:[40,29]};   /* grup -> [taban, genislik] eslesme % */
+      var BANT={0:[99,0],1:[95,4],2:[92,3],3:[88,3],4:[83,4],5:[77,5],6:[69,7],9:[40,28]};   /* grup -> [taban, genislik] eslesme % */
       var liste=[];
       aday.forEach(function(pi){
         var p=P[pi], k=kel.get(pi), kN=k&&kMax?k.s/kMax:0, sN=0;
@@ -329,7 +340,8 @@
         var tam=!!(k&&k.tam), alaka, sinif=H?turSinifi(p,H):-1, g, f=0;
         alaka = tam ? (sem?0.8*kN+0.2*sN:kN) : (sem?(k?0.55*kN+0.45*sN:0.8*sN):kN*0.8);
         /* aranan kelimelerin hepsi urunun ADINDA geciyor mu */
-        var adTam=tam && kt.every(function(t){ var k=kok(t); return k.length>=2 && (p.fAd.indexOf(k)>=0 || (ES[t]||[]).some(function(a){ return p.fAd.indexOf(kok(a))>=0; })); });
+        var adTam=tam && kt.every(function(t){ if(/\d/.test(t)) return p.kAd.indexOf(t)>=0;
+          var k=kok(t); return k.length>=2 && (p.fAd.indexOf(k)>=0 || p.kAd.indexOf(k)>=0 || (ES[t]||[]).some(function(a){ return p.fAd.indexOf(kok(a))>=0; })); });   /* kAd: "Li-po" ~ lipo */
         /* ayni turun BASKA alt turu: "drone motoru" aranirken adi "... Servo Motor" olan (adinda drone gecmeyen) urun */
         var altCel=false;
         if(tam && sinif===2 && HA && qm.length && !adTam){ var on=urunTur(p).on;
@@ -341,15 +353,19 @@
         if(!tam){ g=9; f=alaka*(1+0.05*Math.log10(1+p.satis))*(p.stok?1:0.8)*(sinif===2?1.15:sinif===0?0.85:1); }
         else if(k.kod) g=0;
         else if(H){
-          if(sinif===2) g = altCel ? 3 : (adTam||katTamMi(p)) ? 1 : 2;
-          else g = sinif===1 ? 4 : 5;
+          if(sinif===2) g = altCel ? 4 : adTam ? 1 : katTamMi(p) ? (AYAR.birlesik?1:2) : 3;
+          else g = sinif===1 ? 5 : 6;
         }
-        else g = (adTam||katTamMi(p)) ? 1 : 2;
+        else g = adTam ? 1 : katTamMi(p) ? (AYAR.birlesik?1:2) : 3;
         var B=BANT[g];
         liste.push({p:p, g:g, f:f, al:alaka, eslesme:Math.min(99,B[0]+Math.round(B[1]*alaka))});
       });
+      /* 1. ve 2. grup (aranan turun kendisi) stok bakimindan birlikte: once 1'in stoktakileri, sonra 2'nin stoktakileri,
+         sonra ikisinin tukenenleri. Boylece stokta olan RS2205, tukenmis "... Drone Motoru"larin altinda kalmaz. */
+      function blok(x){ return (x.g===1||x.g===2) ? (x.p.stok ? x.g : 2.5+x.g/10) : x.g; }
       liste.sort(function(a,b){
-        if(a.g!==b.g) return a.g-b.g;
+        var ba=blok(a), bb=blok(b);
+        if(ba!==bb) return ba-bb;
         if(a.g===9) return b.f-a.f;
         return (b.p.stok-a.p.stok) || (b.p.satis*b.p.fiyat - a.p.satis*a.p.fiyat) || (b.al-a.al);
       });
