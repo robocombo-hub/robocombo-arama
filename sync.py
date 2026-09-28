@@ -86,6 +86,14 @@ class Ikas:
             self._tipler[tip] = m
         return self._tipler[tip]
 
+    def girdiler(self, tip):
+        try:
+            d = self.sorgu('query($n:String!){ __type(name:$n){ inputFields{ name } } }', {'n': tip}).get('__type') or {}
+            return [f['name'] for f in d.get('inputFields') or []]
+        except Exception as e:
+            log('girdi tipi okunamadı', tip, e)
+            return []
+
     def secim(self, tip, aday):
         mevcut = self.alanlar(tip)
         parca = []
@@ -136,7 +144,8 @@ def ikas_urunleri(ikas):
         if not veri or ('hasNext' in d and not d['hasNext']) or len(veri) < limit:
             break
         sayfa += 1
-    return urunler, sec
+    filtre = 'in' if 'in' in ikas.girdiler('StringFilterInput') else 'eq'
+    return urunler, sec, filtre
 
 
 def duz_metin(h):
@@ -314,7 +323,7 @@ def main():
         if eksik:
             sys.exit('Eksik GitHub Secret: ' + ', '.join(eksik) + ' (Settings > Secrets and variables > Actions)')
         ikas = Ikas(os.environ['IKAS_MAGAZA'].strip(), os.environ['IKAS_CLIENT_ID'].strip(), os.environ['IKAS_CLIENT_SECRET'].strip())
-        ham, _ = ikas_urunleri(ikas)
+        ham, sec, filtre = ikas_urunleri(ikas)
         urunler = [x for x in (ikas_satiri(p, satis) for p in ham) if x]
         kaynak = 'ikas'
     urunler = [u for u in urunler if u['ad'] and u['slug']]
@@ -337,12 +346,14 @@ def main():
         log('CF_ACCOUNT_ID / CF_API_TOKEN yok: sadece kelime araması için dizin üretiliyor')
 
     satirlar = [[u['ad'], u['sku'], u['marka'], '|'.join(u['kat']), u['slug'], u['gorsel'],
-                 u['fiyat'], u['eski'], u['stok'], u['satis']] for u in urunler]
+                 u['fiyat'], u['eski'], u['stok'], u['satis'], u['id']] for u in urunler]
     dizin = {'v': 2, 'surum': surum, 'k': k,
              'gorselKok': os.environ.get('IKAS_GORSEL_KOK', VARSAYILAN_GORSEL_KOK),
-             'alanlar': ['ad', 'sku', 'marka', 'kategoriler', 'slug', 'gorsel', 'fiyat', 'eskiFiyat', 'stokta', 'satis'],
+             'alanlar': ['ad', 'sku', 'marka', 'kategoriler', 'slug', 'gorsel', 'fiyat', 'eskiFiyat', 'stokta', 'satis', 'id'],
              'u': satirlar}
     json.dump(dizin, open(os.path.join(a.cikti, 'dizin.json'), 'w', encoding='utf-8'), ensure_ascii=False, separators=(',', ':'))
+    if kaynak == 'ikas':   # Worker'in anlik fiyat/stok sorgusu icin (ayni alan secimi)
+        json.dump({'sec': sec, 'filtre': filtre}, open(os.path.join(a.cikti, 'ikas-sorgu.json'), 'w'), separators=(',', ':'))
     json.dump({'surum': surum, 'urun': len(satirlar), 'k': k, 'semantik': k > 0, 'kaynak': kaynak},
               open(os.path.join(a.cikti, 'meta.json'), 'w'), separators=(',', ':'))
     betik = os.path.join(KOK, 'magaza', 'akilli-arama.js')
