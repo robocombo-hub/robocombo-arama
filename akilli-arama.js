@@ -7,7 +7,7 @@
  * Ayarlar: window.RC_ARAMA = { veri, worker, sayfa, stil, populer }
  */
 (function(){
-  var V='[akilli-arama] v2.6';
+  var V='[akilli-arama] v2.7';
   if(window.__rcAra && window.__rcAra.dur) window.__rcAra.dur();
   var AYAR=Object.assign({
     veri:'',                       // https://<kullanici>.github.io/robocombo-arama
@@ -590,8 +590,16 @@ body.rc-arama-sayfasi main > :not(#rc-sonuc){display:none!important}
 
   /* =============================== ACILIR KUTU =============================== */
   var kutu=null, aktifInput=null, secili=-1, zam=null, sonQ='', enterAtla=false, sonE={q:null,e:undefined};
+  /* Sitenin arama kutusu mu? Masaustunde header'daki kutu; mobilde tema aramayi header disinda bir panelde
+     acabildigi icin arama kutusuna benzeyen (type=search, "Ara..." yer tutuculu, "search" sinifli kapta) kutular da.
+     Kategori filtresindeki ve bizim sonuc sayfamizdaki kutular haric. */
+  var ARA_IPUCU=/(^|[\s.,:;!?(])(ara|arama|aranacak|ürün ara|urun ara|ne arıyorsunuz|ne aramıştınız|search)/i;
   function aramaInputu(el){
-    return el && el.tagName==='INPUT' && !!el.closest('header') && /^(text|search|)$/.test(el.type||'') && !el.closest('#rc-ara-kutu');
+    if(!el || el.tagName!=='INPUT' || !/^(text|search|)$/.test(el.type||'')) return false;
+    if(el.closest('#rc-ara-kutu,#rc-sonuc,#rc-kf-kutu,.desktop-filters,.mobile-filters,[class*="filter" i]')) return false;
+    if(el.closest('header')) return true;
+    var ipucu=(el.placeholder||'')+' '+(el.getAttribute('aria-label')||'')+' '+(el.name||'');
+    return el.type==='search' || ARA_IPUCU.test(ipucu) || !!el.closest('[class*="search" i],[id*="search" i]');
   }
   function kutuHazirla(){
     if(kutu&&kutu.isConnected) return kutu;
@@ -800,10 +808,10 @@ body.rc-arama-sayfasi main > :not(#rc-sonuc){display:none!important}
       }
     },true],
     [document,'keypress',function(e){ if(e.key==='Enter'&&aramaInputu(e.target)){ e.preventDefault(); e.stopImmediatePropagation(); } },true],
-    [document,'click',function(e){                       /* header'daki arama dugmesi */
-      var t=e.target; if(!t.closest||t.closest('#rc-ara-kutu')) return;
-      var h=t.closest('header'); if(!h||aramaInputu(t)) return;
-      var alan=t.closest('[class*="search"]'); if(!alan) return;
+    [document,'click',function(e){                       /* arama kutusunun yanindaki buyutec dugmesi (masaustu + mobil panel) */
+      var t=e.target; if(!t.closest||t.closest('#rc-ara-kutu,#rc-sonuc')) return;
+      if(aramaInputu(t)) return;
+      var alan=t.closest('[class*="search" i]'); if(!alan) return;
       var inp=alan.querySelector('input')||(alan.parentElement&&alan.parentElement.querySelector('input'));
       if(!aramaInputu(inp)||!inp.value.trim()) return;
       e.preventDefault(); e.stopImmediatePropagation(); aramaSayfasinaGit(inp.value);
@@ -812,6 +820,11 @@ body.rc-arama-sayfasi main > :not(#rc-sonuc){display:none!important}
     [document,'click',sayfaOlaylari,false],
     [document,'change',sayfaOlaylari,false],
     [document,'submit',sayfaOlaylari,true],
+    [document,'submit',function(e){                      /* mobil klavyedeki "Ara/Git" formu gonderirse */
+      var f=e.target; if(!f||!f.querySelectorAll||f.closest('#rc-sonuc')) return;
+      var inp=[].slice.call(f.querySelectorAll('input')).filter(function(i){ return aramaInputu(i) && i.value.trim(); })[0];
+      if(!inp) return; e.preventDefault(); e.stopImmediatePropagation(); aramaSayfasinaGit(inp.value);
+    },true],
     [window,'resize',konumla,false],
     [window,'scroll',konumla,true]
   ];
