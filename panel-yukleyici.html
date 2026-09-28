@@ -1,0 +1,13 @@
+<script>
+/* [akilli-arama] yükleyici — ikas panelinde Tema > Özel kod'a eklenir.
+   İki adresi kendi kurulumunuza göre değiştirin (README, 6. adım). */
+window.RC_ARAMA = {
+  veri:   'https://KULLANICI-ADINIZ.github.io/robocombo-arama',
+  worker: 'https://robocombo-arama.HESAP-ADINIZ.workers.dev'
+};
+(function(){
+  var s=document.createElement('script');
+  s.src=window.RC_ARAMA.veri+'/akilli-arama.js?h='+Math.floor(Date.now()/36e5);
+  s.async=true; document.head.appendChild(s);
+})();
+</script>
