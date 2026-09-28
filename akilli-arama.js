@@ -7,7 +7,7 @@
  * Ayarlar: window.RC_ARAMA = { veri, worker, sayfa, stil, populer }
  */
 (function(){
-  var V='[akilli-arama] v2.7';
+  var V='[akilli-arama] v2.8';
   if(window.__rcAra && window.__rcAra.dur) window.__rcAra.dur();
   var AYAR=Object.assign({
     veri:'',                       // https://<kullanici>.github.io/robocombo-arama
@@ -479,8 +479,28 @@
     }).join('');
   }
   function yol(q){ return AYAR.sayfa+'?q='+encodeURIComponent(q.trim()); }
+  /* Mobilde temanin arama paneli (div.search-wrapper) sayfa degisince acik kaliyor ve sonuclari ortuyordu:
+     panelin kendi X (kapat) dugmesine basarak kapat. X, kutunun bulundugu satirda kutunun disindaki dugmedir. */
+  var paneliKapatiyor=false;
+  function temaPaneliKapat(inp){
+    try{
+      var w=inp&&inp.closest&&inp.closest('[class*="search-wrapper"]'); if(!w) return;
+      var btn=w.querySelector('[aria-label*="kapat" i],[aria-label*="close" i],[class*="close" i]');
+      if(!btn){
+        var sat=inp.closest('.justify-between')||w;
+        [].slice.call(sat.children).some(function(c){
+          if(c.contains(inp)) return false;
+          var b=c.matches('button,[role="button"]')?c:(c.querySelector('button,[role="button"]')||(c.querySelector('svg')?c:null));
+          if(b){ btn=b; return true; } return false;
+        });
+      }
+      if(!btn) return;
+      paneliKapatiyor=true;
+      btn.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));
+    }catch(e){} finally{ paneliKapatiyor=false; }
+  }
   function git(adres){
-    kapat(); if(aktifInput) aktifInput.blur();
+    var inp=aktifInput; kapat(); if(inp){ inp.blur(); temaPaneliKapat(inp); }
     try{ if(window.next&&window.next.router){ window.next.router.push(adres); return; } }catch(e){}
     location.href=adres;
   }
@@ -808,12 +828,15 @@ body.rc-arama-sayfasi main > :not(#rc-sonuc){display:none!important}
       }
     },true],
     [document,'keypress',function(e){ if(e.key==='Enter'&&aramaInputu(e.target)){ e.preventDefault(); e.stopImmediatePropagation(); } },true],
-    [document,'click',function(e){                       /* arama kutusunun yanindaki buyutec dugmesi (masaustu + mobil panel) */
+    [document,'click',function(e){                       /* arama kutusunun icindeki/yanindaki buyutec dugmesi */
+      if(paneliKapatiyor) return;
       var t=e.target; if(!t.closest||t.closest('#rc-ara-kutu,#rc-sonuc')) return;
       if(aramaInputu(t)) return;
+      if(t.closest('[aria-label*="kapat" i],[aria-label*="close" i],[class*="close" i]')) return;   /* panelin X dugmesi: sadece kapatsin */
       var alan=t.closest('[class*="search" i]'); if(!alan) return;
       var inp=alan.querySelector('input')||(alan.parentElement&&alan.parentElement.querySelector('input'));
       if(!aramaInputu(inp)||!inp.value.trim()) return;
+      if(!(inp.parentElement&&inp.parentElement.contains(t)) && !t.closest('button[type="submit"],input[type="submit"]')) return;   /* kutunun disindaki dugmeler (X) arama yapmasin */
       e.preventDefault(); e.stopImmediatePropagation(); aramaSayfasinaGit(inp.value);
     },true],
     [document,'mousedown',function(e){ if(kutu&&!kutu.contains(e.target)&&!aramaInputu(e.target)) kapat(); },true],
