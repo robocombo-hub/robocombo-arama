@@ -7,7 +7,7 @@
  * Ayarlar: window.RC_ARAMA = { veri, worker, sayfa, stil, populer }
  */
 (function(){
-  var V='[akilli-arama] v2.4';
+  var V='[akilli-arama] v2.5';
   if(window.__rcAra && window.__rcAra.dur) window.__rcAra.dur();
   var AYAR=Object.assign({
     veri:'',                       // https://<kullanici>.github.io/robocombo-arama
@@ -258,13 +258,15 @@
         alt.forEach(function(a,ix){ eslesen(a,ix>0).forEach(function(s,pi){ s=ix?s*0.85:s; if((enIyi.get(pi)||0)<s) enIyi.set(pi,s); }); });
         enIyi.forEach(function(s,pi){ puan.set(pi,(puan.get(pi)||0)+s); kapsam.set(pi,(kapsam.get(pi)||0)+1); });
       });
-      var kod=new Set();
+      var kod=new Set(), sku=new Set();
       if(kq.length>=3 && (/\d/.test(kq)||kq.length>=5)){
         for(var i=0;i<P.length;i++) if(P[i].kAd.indexOf(kq)>=0){ puan.set(i,(puan.get(i)||0)+4); kapsam.set(i,tk.length); kod.add(i); }
       }
       if(/^\d{4,}$/.test(kq)){
-        for(var j=0;j<P.length;j++) if(P[j].sku.indexOf(kq)===0){ puan.set(j,(puan.get(j)||0)+20); kapsam.set(j,tk.length); kod.add(j); }
+        for(var j=0;j<P.length;j++) if(P[j].sku.indexOf(kq)===0){ puan.set(j,(puan.get(j)||0)+20); kapsam.set(j,tk.length); kod.add(j); sku.add(j); }
       }
+      /* model kodu: harf+rakam karisik bir kelime (mg996, hcsr04, sr04) -> ayri ust grup; "raspberry pi 5" gibi aramalar degil */
+      var modelKod=tk.some(function(t){ return /[a-z]/.test(t) && /\d/.test(t); });
       var n=tk.length, esik=n, aday=[];
       kapsam.forEach(function(c,pi){ if(c>=esik) aday.push(pi); });
       if(aday.length<3 && n>=2){ esik=n-1; aday=[]; kapsam.forEach(function(c,pi){ if(c>=esik) aday.push(pi); }); }
@@ -273,7 +275,7 @@
         var p=P[pi], s=puan.get(pi), tam=kapsam.get(pi)>=n||kod.has(pi);
         if(p.fAd.indexOf(fq)>=0) s+=2; if(p.fAd.indexOf(fq)===0) s+=0.5;
         s+=(tam?1:0);
-        sonuc.set(pi,{s:s,tam:tam});      /* ham alaka puani: stok/satis burada yok */
+        sonuc.set(pi,{s:s,tam:tam,kod:sku.has(pi) || (kod.has(pi) && modelKod)});      /* ham alaka puani; kod: model/stok kodu birebir */
       });
       return sonuc;
     }
@@ -296,25 +298,37 @@
         semLo=Math.min(Math.max(alt, semTop-0.3), sem[sirali[Math.min(11,sirali.length-1)]]);   /* en az 12 anlam adayi */
         sirali.slice(0,60).forEach(function(pi){ if(sem[pi]>=semLo) aday.add(pi); });
       }
-      /* Katmanli siralama:
-         A) aranan kelimelerin hepsini (ya da model/stok kodunu) iceren urunler -> her zaman en ustte, %85-99
-         B) kelimelerin bir kismini iceren + sadece anlamca yakin urunler -> altta, %40-84
-         Stok ve cok satma sadece ayni katman icindeki sirayi etkiler, eslesme yuzdesini degil. */
+      /* Siralama (v2.5): once GRUP, grup icinde SATIS.
+         Gruplar (A = aranan kelimelerin hepsi var):
+           0  rakamli model/stok kodu birebir ("mg996", "hcsr04")
+           1  aranan turun kendisi, adinda ya da tam o kategoride ("Drone Motorlari" kategorisindeki F30 dahil)
+           2  aranan tur ama baglanti zayif (kelime sadece genis bir kategoride gecer)
+           3  ayni turun baska alt turu ("drone motoru" ararken servo motor)
+           4  turu belirsiz        5  baska tur, yan urun (motor surucusu, pervane)
+           9  kelimelerin bir kismi / sadece anlamca yakin (kendi icinde alaka sirasi)
+         Grup icinde: once stoktakiler, sonra ciro (satis adedi x fiyat) buyukten kucuge. Cok satan ama tukenmis urun
+         grubun basina cikmaz; az satan urun baska gruba dusmez, kendi grubunda asagi iner. */
       /* tam eslesme varsa anlam aramasi sadece cok yakin urunleri ekler ("velox" gibi marka/model aramalari kirlenmesin) */
       var semEsik = (tamSay>=3 || (kt.length===1 && tamSay>=1)) ? 2 : (tamSay>=1 ? 0.6 : 0);   /* 2 = anlam-yalniz urun ekleme */
-      /* A katmani kendi icinde de ayrilir: aranan TURUN kendisi (motor) > belirsiz > baska tur (motor surucusu, pervane) */
       var H=sorguTur(kt), HA=H?altAl(H):null;
       var qm=H?kt.filter(function(t){ return !/\d/.test(t) && !kokEsit(kok(t),H); }).map(kok):[];   /* "drone" motoru */
+      var qHarf=kt.filter(function(t){ return !/\d/.test(t); }).map(function(t){ return [kok(t)].concat((ES[t]||[]).map(kok)); });
+      var qRakam=kt.filter(function(t){ return /\d/.test(t); });
+      function katTamMi(p){                                 /* aranan harfli kelimelerin hepsi TEK bir kategorinin adinda */
+        if(!qHarf.length) return false;
+        if(!qRakam.every(function(t){ return p.kAd.indexOf(t)>=0; })) return false;
+        var kk=p.katK||(p.katK=p.kat.split('|').filter(Boolean).map(function(c){ return tokenlar(c.replace(/\(.*?\)/g,' ')).map(kok); }));
+        return kk.some(function(ks){ return qHarf.every(function(al){ return al.some(function(q){ return ks.some(function(v){ return kokEsit(v,q); }); }); }); });
+      }
+      var BANT={0:[99,0],1:[95,4],2:[90,4],3:[84,4],4:[78,5],5:[70,7],9:[40,29]};   /* grup -> [taban, genislik] eslesme % */
       var liste=[];
       aday.forEach(function(pi){
         var p=P[pi], k=kel.get(pi), kN=k&&kMax?k.s/kMax:0, sN=0;
         if(sem) sN=Math.max(0,Math.min(1,(sem[pi]-semLo)/Math.max(1e-6,semTop-semLo)));
         if(!k && sN<semEsik) return;                         /* kelime eslesmesi yoksa sadece guclu anlam yakinligi */
-        var tam=!!(k&&k.tam), alaka, yuzde, sinif=H?turSinifi(p,H):-1;
-        if(tam){ alaka=sem?0.8*kN+0.2*sN:kN;
-          yuzde = sinif===1 ? 76+Math.round(8*alaka) : sinif===0 ? 66+Math.round(10*alaka) : 85+Math.round(14*alaka); }   /* sinif 2 asagida */
-        else { alaka=sem?(k?0.55*kN+0.45*sN:0.8*sN):kN*0.8; yuzde=40+Math.round(44*alaka); }
-        /* aranan kelimelerin hepsi urunun ADINDA geciyorsa (sadece kategorisinde degil) ayni sinif icinde one alinir */
+        var tam=!!(k&&k.tam), alaka, sinif=H?turSinifi(p,H):-1, g, f=0;
+        alaka = tam ? (sem?0.8*kN+0.2*sN:kN) : (sem?(k?0.55*kN+0.45*sN:0.8*sN):kN*0.8);
+        /* aranan kelimelerin hepsi urunun ADINDA geciyor mu */
         var adTam=tam && kt.every(function(t){ var k=kok(t); return k.length>=2 && (p.fAd.indexOf(k)>=0 || (ES[t]||[]).some(function(a){ return p.fAd.indexOf(kok(a))>=0; })); });
         /* ayni turun BASKA alt turu: "drone motoru" aranirken adi "... Servo Motor" olan (adinda drone gecmeyen) urun */
         var altCel=false;
@@ -324,12 +338,23 @@
             && !qm.some(function(q){ return HA[q] && uyumlu(H,q,on); })
             /* adinda uyumlu bir alt tur de geciyorsa ("Firçasiz DC Motor") eleme */
             && !(p.adK||(p.adK=tokenlar(p.ad).map(kok))).some(function(m){ return HA[m] && qm.some(function(q){ return HA[q] && uyumlu(H,q,m); }); })); }
-        if(tam && sinif===2) yuzde = adTam ? 93+Math.round(6*alaka) : altCel ? 80+Math.round(6*alaka) : 87+Math.round(5*alaka);   /* bantlar cakismaz: sira ile yuzde ayni yonde */
-        var sira=tam ? 2+(sinif===2?9:sinif===0?0:4.5)+(adTam?1.4:0)-(altCel?1.4:0)+alaka*(1+0.1*Math.log10(1+p.satis))*(p.stok?1:0.7)
-                     : alaka*(1+0.05*Math.log10(1+p.satis))*(p.stok?1:0.8)*(sinif===2?1.15:sinif===0?0.85:1);
-        liste.push({p:p,f:sira,eslesme:Math.min(99,yuzde)});
+        if(!tam){ g=9; f=alaka*(1+0.05*Math.log10(1+p.satis))*(p.stok?1:0.8)*(sinif===2?1.15:sinif===0?0.85:1); }
+        else if(k.kod) g=0;
+        else if(H){
+          if(sinif===2) g = altCel ? 3 : (adTam||katTamMi(p)) ? 1 : 2;
+          else g = sinif===1 ? 4 : 5;
+        }
+        else g = (adTam||katTamMi(p)) ? 1 : 2;
+        var B=BANT[g];
+        liste.push({p:p, g:g, f:f, al:alaka, eslesme:Math.min(99,B[0]+Math.round(B[1]*alaka))});
       });
-      liste.sort(function(a,b){ return b.f-a.f; });
+      liste.sort(function(a,b){
+        if(a.g!==b.g) return a.g-b.g;
+        if(a.g===9) return b.f-a.f;
+        return (b.p.stok-a.p.stok) || (b.p.satis*b.p.fiyat - a.p.satis*a.p.fiyat) || (b.al-a.al);
+      });
+      /* yuzde asagi dogru hic artmasin: ustteki urunun yuzdesi alttakinden dusuk gorunmesin */
+      for(var y=1;y<liste.length;y++) if(liste[y].eslesme>liste[y-1].eslesme) liste[y].eslesme=liste[y-1].eslesme;
       var kat=[];
       if(KAT.length && liste.length){
         var say=Object.create(null);
