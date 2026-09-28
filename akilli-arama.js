@@ -7,7 +7,7 @@
  * Ayarlar: window.RC_ARAMA = { veri, worker, sayfa, stil, populer }
  */
 (function(){
-  var V='[akilli-arama] v2.2';
+  var V='[akilli-arama] v2.3';
   if(window.__rcAra && window.__rcAra.dur) window.__rcAra.dur();
   var AYAR=Object.assign({
     veri:'',                       // https://<kullanici>.github.io/robocombo-arama
@@ -57,9 +57,91 @@
     esp:['esp8266','esp32','nodemcu'], nodemcu:['esp8266'], mikrobit:['microbit'], microbit:['mikrobit']
   };
 
+  /* ---- Urun turu ("drone motoru" arayana once MOTORLAR, sonra motor surucusu/pervane gibi yan urunler) ----
+     Turkcede urunun ne oldugunu isim tamlamasinin SON kelimesi soyler: "Drone Motor Surucusu" bir surucudur,
+     "Drone Motoru" bir motordur. Tur kelimeleri magazanin kendi kategori adlarindan (Drone Motorlari,
+     Piller, Sensorler...) ve asagidaki genel listeden cikarilir. */
+  var TUR_GENEL=('motor surucu sensor pil batarya aku kablo kamera ekran display lcd oled tft pervane kumanda alici verici anten '+
+    'role modul kart kit set shield direnc entegre diyot bobin kondansator transistor mosfet led buzzer filament klemens rulman '+
+    'somun vida pul multimetre osiloskop tornavida pense havya ucu header kaplin trafo plaket cihaz aparat tutucu braket koruyucu '+
+    'kutu kasa kapak soket konnektor adaptor sase govde tekerlek kayis kasnak disli lamba buton anahtar regulator jumper '+
+    'breadboard breadbord lehim sogutucu fan kiskac pompa istasyon sehpa matkap mengene tabla nozzle extruder hotend levha bant '+
+    'kelepce sigorta gozluk kilif stand yuva programlayici kontrolcu denetleyici alet').split(' ');
+  var TUR_ZAYIF={modul:1,kart:1,board:1,set:1,kit:1,paket:1,parca:1};          /* "Kamera Modulu" -> tur: kamera */
+  var TUR_ES={pil:['batarya','lipo','aku'], surucu:['driver','esc'], ekran:['lcd','oled','display','tft'], kamera:['camera','cam'],
+    kit:['set'], role:['relay'], pervane:['prop','propeller'], adaptor:['adapter'], direnc:['resistor'], kondansator:['kapasitor','capacitor'],
+    kumanda:['verici','transmitter'], sarj:['charger'], robot:['robotik'], alet:['cihaz'], kablo:['jumper']};   /* ayni tur sayilan kelimeler */
+  var TUR_DEGIL=Object.create(null);
+  function kok(t){                                  /* kaba Turkce govde: motoru/motorlari -> motor, pervanesi -> pervane */
+    if(t.length<4 || /\d/.test(t)) return t;
+    var r=t.replace(/(lari|leri|lar|ler)$/,''); if(r!==t && r.length>=3) return r;
+    if(t.length>=5){ r=t.replace(/(si|su)$/,''); if(r!==t && r.length>=3) return r; }
+    if(/[^aeiou][iu]$/.test(t)) return t.slice(0,-1);
+    return t;
+  }
+  'urun diger hazir elektronik tabanli yardimci yeni cok satan model renk mat seffaf'.split(' ').forEach(function(t){ TUR_DEGIL[t]=1; TUR_DEGIL[kok(t)]=1; });
+  function kokEsit(a,b){
+    if(a===b) return true;
+    var k=a.length<b.length?a:b, u=a.length<b.length?b:a;
+    return k.length>=3 && u.length-k.length<=1 && u.indexOf(k)===0;          /* surucu ~ suruc */
+  }
+
   var M=(function(){
     var P=[], IDX=Object.create(null), VOC=Object.create(null), VLIST=[], KAT=[], VEK=null, K=0, hazir=false, ONB=Object.create(null);
+    var TUR=Object.create(null), SYN=Object.create(null);
     function ekle(t,pi,w){ var m=VOC[t]; if(!m) m=VOC[t]=new Map(); if((m.get(pi)||0)<w) m.set(pi,w); }
+    function turMu(s){ return !!(s && !TUR_DEGIL[s] && (TUR[s] || TUR[s+'u'] || TUR[s+'i'] || (s.length>=5 && TUR[s.slice(0,-1)]))); }
+    function synAl(s){ return SYN[s] || (s.length>=5 && SYN[s.slice(0,-1)]) || SYN[s+'u'] || []; }
+    function turEsit(a,b){
+      if(kokEsit(a,b)) return true;
+      return synAl(a).some(function(x){ return kokEsit(x,b); }) || synAl(b).some(function(x){ return kokEsit(a,x); });
+    }
+    /* bir ad parcasindan tur kelimesi: sondan geriye, zayif kelimeleri (modul, kart, set) atlayarak */
+    function sondakiTur(tk, bas){
+      for(var i=tk.length-1;i>=(bas||0);i--){
+        if(/\d/.test(tk[i])) continue;
+        var s=kok(tk[i]); if(turMu(s) && !TUR_ZAYIF[s]) return s;
+      }
+      return null;
+    }
+    function katBas(c){                              /* "Drone Motor Suruculeri (ESC)" -> surucu */
+      var tk=tokenlar(c.replace(/\(.*?\)/g,' ')).filter(function(t){ return !/\d/.test(t); });
+      if(!tk.length) return null;
+      var s=kok(tk[tk.length-1]);
+      if((TUR_ZAYIF[s] || s==='model' || s==='urun') && tk.length>=2) s=kok(tk[tk.length-2]);   /* Raspberry Pi Modelleri -> pi */
+      return TUR_DEGIL[s]?null:s;
+    }
+    function urunTur(p){
+      if(p.tur!==undefined) return p.tur;
+      /* parantez ici atilir; " - " ile ayrilmis parcalara sirayla bakilir; "X icin Y" -> Y'nin turu */
+      var parca=p.ad.replace(/\(.*?(\)|$)/g,' ').split(/\s[-–|]\s/), bt=tokenlar(p.marka), s=null;
+      for(var i=0;i<parca.length && !s;i++){
+        var tk=tokenlar(parca[i]), bas=0, ic=tk.lastIndexOf('icin');
+        if(i===0) while(bas<bt.length && bas<tk.length-1 && tk[bas]===bt[bas]) bas++;   /* "T-Motor ..." markasindaki motor sayilmaz */
+        if(ic>=0) bas=Math.max(bas,ic+1);
+        s=sondakiTur(tk,bas);
+      }
+      if(s) return (p.tur={ad:true, t:[s]});
+      var kt=[]; p.kat.split('|').forEach(function(c){ var h=c&&katBas(c); if(h && kt.indexOf(h)<0) kt.push(h); });
+      return (p.tur={ad:false, t:kt});
+    }
+    function sorguTur(tk){                           /* aranan seyin turu: "drone motoru" -> motor; "arduino uno" -> arduino */
+      var zayif=null;
+      for(var i=tk.length-1;i>=0;i--){
+        if(/\d/.test(tk[i])) continue;
+        var s=kok(tk[i]); if(!turMu(s)) continue;
+        if(TUR_ZAYIF[s]){ zayif=zayif||s; continue; }
+        return s;
+      }
+      return null;                                   /* sadece "kart", "modul" gibi genel kelime: tur ayrimi yapma */
+    }
+    /* 2 = aranan turun kendisi, 1 = belirsiz, 0 = baska tur (yan urun) */
+    function turSinifi(p,H){
+      var u=urunTur(p);
+      if(!u.t.length) return 1;
+      if(u.t.some(function(h){ return turEsit(h,H); })) return 2;
+      return u.ad?0:1;
+    }
     function kur(dizin,vekBuf){
       var u=dizin.u||[]; P=[]; IDX=Object.create(null); VOC=Object.create(null); ONB=Object.create(null);
       for(var i=0;i<u.length;i++){
@@ -74,6 +156,24 @@
         tokenlar(p.kat.replace(/\|/g,' ')).forEach(function(t){ ekle(t,i,1.5); });
       }
       VLIST=Object.keys(VOC);
+      /* tur sozlugu: cogul kategori adlarinin son kelimesi (Drone Motorlari -> motor) + genel liste + es anlamlilar */
+      TUR=Object.create(null); SYN=Object.create(null);
+      TUR_GENEL.forEach(function(t){ TUR[kok(t)]=1; });
+      var gorulen=Object.create(null);
+      P.forEach(function(p){ p.kat.split('|').forEach(function(c){
+        if(!c || gorulen[c]) return; gorulen[c]=1;
+        var tk=tokenlar(c.replace(/\(.*?\)/g,' ')).filter(function(t){ return !/\d/.test(t); });
+        if(!tk.length) return;
+        var son=tk[tk.length-1]; if(!/(lar|ler|lari|leri)$/.test(son)) return;          /* cogul = urun turu */
+        var s=kok(son); if(TUR_DEGIL[s]) return; TUR[s]=1;
+        if(TUR_ZAYIF[s] && tk.length>=2){ var o=kok(tk[tk.length-2]); if(!TUR_DEGIL[o]) TUR[o]=1; }
+      }); });
+      Object.keys(TUR_ES).forEach(function(k){
+        var ks=kok(k);
+        TUR_ES[k].forEach(function(v){ var vs=kok(v);
+          (SYN[ks]=SYN[ks]||[]).push(vs); (SYN[vs]=SYN[vs]||[]).push(ks);
+          if(TUR[ks] && !TUR[vs]) TUR[vs]=1; });
+      });
       K=dizin.k||0; VEK=null;
       if(vekBuf && K && vekBuf.byteLength===P.length*K) VEK=new Int8Array(vekBuf);
       KAT=[]; var A=window.__rcKatAgaci;
@@ -189,16 +289,21 @@
          Stok ve cok satma sadece ayni katman icindeki sirayi etkiler, eslesme yuzdesini degil. */
       /* tam eslesme varsa anlam aramasi sadece cok yakin urunleri ekler ("velox" gibi marka/model aramalari kirlenmesin) */
       var semEsik = (tamSay>=3 || (kt.length===1 && tamSay>=1)) ? 2 : (tamSay>=1 ? 0.6 : 0);   /* 2 = anlam-yalniz urun ekleme */
+      /* A katmani kendi icinde de ayrilir: aranan TURUN kendisi (motor) > belirsiz > baska tur (motor surucusu, pervane) */
+      var H=sorguTur(kt);
       var liste=[];
       aday.forEach(function(pi){
         var p=P[pi], k=kel.get(pi), kN=k&&kMax?k.s/kMax:0, sN=0;
         if(sem) sN=Math.max(0,Math.min(1,(sem[pi]-semLo)/Math.max(1e-6,semTop-semLo)));
         if(!k && sN<semEsik) return;                         /* kelime eslesmesi yoksa sadece guclu anlam yakinligi */
-        var tam=!!(k&&k.tam), alaka, yuzde;
-        if(tam){ alaka=sem?0.8*kN+0.2*sN:kN; yuzde=85+Math.round(14*alaka); }
+        var tam=!!(k&&k.tam), alaka, yuzde, sinif=H?turSinifi(p,H):-1;
+        if(tam){ alaka=sem?0.8*kN+0.2*sN:kN;
+          yuzde = sinif===2 ? 90+Math.round(9*alaka) : sinif===1 ? 82+Math.round(10*alaka) : sinif===0 ? 70+Math.round(12*alaka) : 85+Math.round(14*alaka); }
         else { alaka=sem?(k?0.55*kN+0.45*sN:0.8*sN):kN*0.8; yuzde=40+Math.round(44*alaka); }
-        var sira=tam ? 2+alaka*(1+0.1*Math.log10(1+p.satis))*(p.stok?1:0.7)
-                     : alaka*(1+0.05*Math.log10(1+p.satis))*(p.stok?1:0.8);
+        /* aranan kelimelerin hepsi urunun ADINDA geciyorsa (sadece kategorisinde degil) ayni sinif icinde one alinir */
+        var adTam=tam && kt.every(function(t){ var k=kok(t); return k.length>=2 && (p.fAd.indexOf(k)>=0 || (ES[t]||[]).some(function(a){ return p.fAd.indexOf(kok(a))>=0; })); });
+        var sira=tam ? 2+(sinif===2?6:sinif===0?0:3)+(adTam?1.4:0)+alaka*(1+0.1*Math.log10(1+p.satis))*(p.stok?1:0.7)
+                     : alaka*(1+0.05*Math.log10(1+p.satis))*(p.stok?1:0.8)*(sinif===2?1.15:sinif===0?0.85:1);
         liste.push({p:p,f:sira,eslesme:Math.min(99,yuzde)});
       });
       liste.sort(function(a,b){ return b.f-a.f; });
@@ -219,7 +324,7 @@
       /* ciroya gore (adet x fiyat): 0,50 TL'lik direncler yerine asil satis yapan urunler */
       return P.filter(function(p){ return p.stok && p.fiyat>0; }).sort(function(a,b){ return b.satis*b.fiyat-a.satis*a.fiyat; }).slice(0,n);
     }
-    return {kur:kur, ara:ara, cokSatan:cokSatan, urun:function(id){ return IDX[id]; }, hazir:function(){return hazir;}, semHazir:function(){return !!VEK;}};
+    return {kur:kur, ara:ara, cokSatan:cokSatan, _tur:function(){ return {TUR:TUR,SYN:SYN,urunTur:urunTur,sorguTur:sorguTur,P:P}; }, urun:function(id){ return IDX[id]; }, hazir:function(){return hazir;}, semHazir:function(){return !!VEK;}};
   })();
 
   /* =============================== VERI =============================== */
