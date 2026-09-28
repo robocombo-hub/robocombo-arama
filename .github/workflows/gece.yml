@@ -1,0 +1,60 @@
+name: Arama dizinini güncelle
+
+on:
+  schedule:
+    - cron: '30 0 * * *'      # her gece 03:30 (Türkiye saati)
+  workflow_dispatch: {}        # Actions sekmesinden elle de çalıştırılabilir
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  derle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install numpy requests
+      - name: Dosyaları klasörlere diz
+        run: |
+          mkdir -p sync magaza
+          for f in sync.py satis.json; do if [ -f "$f" ]; then cp "$f" sync/; fi; done
+          for f in akilli-arama.js panel-yukleyici.html; do if [ -f "$f" ]; then cp "$f" magaza/; fi; done
+          ls sync magaza
+      - name: Vektör önbelleğini geri yükle
+        uses: actions/cache@v4
+        with:
+          path: onbellek
+          key: vektor-${{ github.run_id }}
+          restore-keys: vektor-
+      - name: ikas'tan ürünleri çek, dizini üret
+        run: python sync/sync.py
+        env:
+          IKAS_MAGAZA: ${{ secrets.IKAS_MAGAZA }}
+          IKAS_CLIENT_ID: ${{ secrets.IKAS_CLIENT_ID }}
+          IKAS_CLIENT_SECRET: ${{ secrets.IKAS_CLIENT_SECRET }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  yayinla:
+    needs: derle
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.dagit.outputs.page_url }}
+    steps:
+      - id: dagit
+        uses: actions/deploy-pages@v4
