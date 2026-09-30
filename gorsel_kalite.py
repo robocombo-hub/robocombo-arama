@@ -39,12 +39,15 @@ IKAS_TOKEN_URL = os.environ.get('IKAS_TOKEN_URL', '')
 IKAS_GQL = os.environ.get('IKAS_GQL', 'https://api.myikas.com/api/v1/admin/graphql')
 IKAS_UPLOAD = os.environ.get('IKAS_UPLOAD', 'https://api.myikas.com/api/v1/admin/product/upload/image')
 ONYUZ = os.environ.get('MAGAZA_ONYUZ', 'https://l0v8l-robocombo.myikas.com').rstrip('/')
-IKAS_BOYUTLAR = [180, 360, 540, 720, 900, 1080, 1296, 1440, 1512, 1600, 1728, 1920, 1944, 2160, 2560, 3024, 3840]
+IKAS_BOYUTLAR = [180, 360, 540, 720, 900, 1080, 1296, 1512, 1728, 2560, 3840]   # kesif: digerleri 404
 CIKTI = os.environ.get('CIKTI', 'cikti')
 YEDEK_DIR = os.environ.get('YEDEK_DIR', 'yedek')
 AKTAR_ONCESI = os.environ.get('AKTAR_ONCESI_DIR', 'aktar-oncesi')
 BEKLE = float(os.environ.get('AKTAR_BEKLE', '3'))
 FAZLA_SIL = os.environ.get('FAZLA_SIL', '') == '1'
+# ikas ayni gorseli buyuk boyut istenince daha az sikistirarak veriyor (kesif: 380 px gorsel image_540'ta 9 KB, image_2560'ta 18 KB).
+# Kayitli gorselin kendisini olcmek icin en az sikistirilmis surum istenir; teslim (tema) kalitesi ayrica olculur.
+OLCUM_BOYUT = int(os.environ.get('IKAS_OLCUM_BOYUT', '2560'))
 UA = {'User-Agent': 'Mozilla/5.0 (robocombo-gorsel-kontrol)'}
 
 # esikler (kesif / ilk rapor sonucuna gore ayarlanabilir)
@@ -211,6 +214,8 @@ def aciklama_gorselleri(h):
     out = []
     for u in ACIKLAMA_RE.findall(h or ''):
         u = htmlmod.unescape(u).strip()
+        if u.lower().startswith('about:'):
+            u = u[6:]
         if u.startswith('//'):
             u = 'https:' + u
         elif u.startswith('/'):
@@ -285,6 +290,10 @@ class TiciHarita:
             self.tam.setdefault(yol.lower(), u)
             n = norm(yol)
             self.nrm.setdefault(n, u)
+            n2 = re.sub(r'-pr-\d+$', '', n)          # eski Ticimax adresi: Urun-Adi,PR-123.html
+            if n2 != n:
+                self.nrm.setdefault(n2, u)
+                n = n2
             t = frozenset(x for x in n.split('-') if x)
             self.tok[u] = t
             for x in t:
@@ -304,6 +313,9 @@ class TiciHarita:
         n = norm(slug)
         if n and n in self.nrm:
             return self.nrm[n], 'yazim-farki'
+        n3 = re.sub(r'-\d{6,}$', '', n)               # ikas'in eklemis oldugu uzun sayi eki
+        if n3 != n and n3 in self.nrm:
+            return self.nrm[n3], 'yazim-farki'
         na = norm(ad)
         if na and na in self.nrm:
             return self.nrm[na], 'urun-adi'
@@ -543,7 +555,7 @@ def urun_isle(u, yedek=None, sakla=False):
     hedef_en = max([t['en'] for t in s['tici'] if t.get('en')] or [1080])
     ikas_im = []
     for img_id in u['ikas']:
-        im, boy, bayt = ikas_indir(img_id, hedef_en)
+        im, boy, bayt = ikas_indir(img_id, max(hedef_en, OLCUM_BOYUT))
         s['ikas'].append({'imageId': img_id, 'istenen': boy, 'en': im.size[0] if im else 0, 'boy': im.size[1] if im else 0, 'bayt': bayt})
         ikas_im.append(im)
     if not u['ikas']:
@@ -803,7 +815,7 @@ class Aktarim:
         return m
 
     def dogrula(self, nid, t_im):
-        im, boy, _ = ikas_indir_bekle(nid, t_im.size[0])
+        im, boy, _ = ikas_indir_bekle(nid, max(t_im.size[0], OLCUM_BOYUT))
         if im is None:
             return False, 'ikas CDN görseli vermedi'
         k = karsilastir(t_im, im)
@@ -950,6 +962,97 @@ class Aktarim:
 
 
 # ------------------------------------------------------------------ kesif
+KALITE_BOYUTLAR = [540, 720, 1080, 1296, 1728, 2560]
+
+
+def _detay_penceresi(im, k=96):
+    """en ayrintili (keskinlik farkini en iyi gosteren) k x k bolge"""
+    g = np.asarray(im.convert('L'), dtype=np.float64)
+    h, w = g.shape
+    if h < k or w < k:
+        return (0, 0, w, h)
+    en, yer = -1, (0, 0)
+    adim = max(8, k // 3)
+    for y in range(0, h - k + 1, adim):
+        for x in range(0, w - k + 1, adim):
+            v = _lap(g[y:y + k, x:x + k]).var()
+            if v > en:
+                en, yer = v, (x, y)
+    return (yer[0], yer[1], yer[0] + k, yer[1] + k)
+
+
+def _karsilastirma_resmi(ad, tici_im, surumler, dosya):
+    """ayni bolge, 4 kat buyutulmus: Ticimax orijinali | Ticimax sitesinde | ikas boyutlari"""
+    from PIL import ImageDraw
+    kutu = _detay_penceresi(tici_im)
+    kare = 4 * (kutu[2] - kutu[0])
+    parca = [('Ticimax orijinal', tici_im)] + surumler
+    tuval = Image.new('RGB', (len(parca) * (kare + 10) + 10, kare + 60), 'white')
+    d = ImageDraw.Draw(tuval)
+    d.text((10, 6), ad[:120], fill=(3, 28, 55))
+    for n, (etiket, im) in enumerate(parca):
+        if im.size != tici_im.size:
+            im = im.resize(tici_im.size, Image.LANCZOS)
+        tuval.paste(im.crop(kutu).resize((kare, kare), Image.NEAREST), (10 + n * (kare + 10), 26))
+        d.text((10 + n * (kare + 10), kare + 32), etiket, fill=(3, 28, 55))
+    tuval.save(dosya)
+
+
+def kalite_boyut(ornek, cikti_dir):
+    """ikas ayni gorseli istenen boyuta gore farkli sikistirmayla veriyor mu? Her boyutu Ticimax orijinaliyle olc."""
+    ozet, detay, resim = {}, [], 0
+    for u in ornek:
+        r = al(u.get('tici_sayfa') or TICI_SITE + '/' + u['slug'], engel_bekle=True)
+        gal = tici_galeri(r.text) if r is not None and r.status_code == 200 else []
+        if not gal or not u['ikas']:
+            continue
+        rr = al(tici_url(gal[0]))
+        t = ac(rr.content) if rr is not None and rr.status_code == 200 else None
+        if t is None:
+            continue
+        satir = {'sku': u['sku'], 'ticimax': f'{t.size[0]}x{t.size[1]}:{len(rr.content) // 1024}KB', 'boyut': {}}
+        surumler = []
+        if 'static.ticimax.cloud/' in tici_url(gal[0]):
+            cu = 'https://static.ticimax.cloud/cdn-cgi/image/width=' + str(t.size[0]) + ',quality=85,format=webp/' + tici_url(gal[0]).split('static.ticimax.cloud/', 1)[1]
+            cr = al(cu, deneme=2)
+            ci = ac(cr.content) if cr is not None and cr.status_code == 200 else None
+            if ci is not None:
+                k = karsilastir(t, ci)
+                satir['boyut']['ticimax_sitesi_q85'] = {'kb': round(len(cr.content) / 1024, 1), 'px': f'{ci.size[0]}x{ci.size[1]}', **k}
+                ozet.setdefault('ticimax_sitesi_q85', []).append((len(cr.content), k))
+                surumler.append(('Ticimax sitesinde', ci))
+        ilk = None
+        for b in KALITE_BOYUTLAR:
+            ir = al(ikas_url(u['ikas'][0], b), deneme=2)
+            im = ac(ir.content) if ir is not None and ir.status_code == 200 else None
+            if im is None:
+                continue
+            if ilk is None:
+                ilk = im
+                if hmesafe(phash(t), phash(im)) > ESIK_ESLESME:
+                    satir['not'] = 'ikas ana görseli Ticimax ana görseliyle eşleşmedi'
+                    break
+            k = karsilastir(t, im)
+            satir['boyut'][f'ikas_{b}'] = {'kb': round(len(ir.content) / 1024, 1), 'px': f'{im.size[0]}x{im.size[1]}', **k}
+            ozet.setdefault(f'ikas_{b}', []).append((len(ir.content), k))
+            if b in (540, 1296, 2560):
+                surumler.append((f'ikas image_{b}', im))
+        detay.append(satir)
+        if resim < 6 and len(surumler) >= 3:
+            resim += 1
+            try:
+                _karsilastirma_resmi(f'{u["sku"]} {u["ad"]}', t, surumler, os.path.join(cikti_dir, f'kalite-karsilastirma-{resim}.png'))
+            except Exception as e:
+                satir['resim_hata'] = str(e)[:200]
+    ort = {}
+    for ad, l in ozet.items():
+        ort[ad] = {'ornek': len(l), 'ort_kb': round(sum(b for b, _ in l) / len(l) / 1024, 1),
+                   'ort_keskinlik': round(sum(k['keskinlik'] for _, k in l) / len(l), 3),
+                   'ort_benzerlik': round(sum(k['ssim'] for _, k in l) / len(l), 3),
+                   'ort_renk': round(sum(k['renk'] for _, k in l) / len(l), 2)}
+    return {'ortalama': ort, 'urunler': detay}
+
+
 def kesif(ikas, urunler, n=30, harita=None):
     sonuc = {'ikas_boyutlari': {}, 'ticimax_klasorleri': {}, 'sema': {}, 'ticimax_eslesme': {}}
     if harita is not None:
@@ -970,6 +1073,11 @@ def kesif(ikas, urunler, n=30, harita=None):
             r = al(ikas_url(img, b), deneme=1)
             im = ac(r.content) if r is not None and r.status_code == 200 else None
             sonuc['ikas_boyutlari'].setdefault(str(b), []).append(f'{r.status_code if r is not None else "yok"}:{im.size[0]}x{im.size[1]}:{len(r.content) // 1024}KB' if im else f'{r.status_code if r is not None else "yok"}')
+    try:
+        os.makedirs(CIKTI, exist_ok=True)
+        sonuc['kalite_boyut'] = kalite_boyut(ornek[:12], CIKTI)
+    except Exception as e:
+        sonuc['kalite_boyut'] = {'hata': str(e)[:300]}
     for u in ornek[:10]:
         r = al(u.get('tici_sayfa') or TICI_SITE + '/' + u['slug'], engel_bekle=True)
         gal = tici_galeri(r.text) if r is not None and r.status_code == 200 else []
