@@ -961,6 +961,127 @@ class Aktarim:
         return r
 
 
+# ------------------------------------------------------------------ buyutme denemesi
+MODEL_URL = {
+    'yapay-zeka-foto': 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth',
+    'yapay-zeka-genel': 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth',
+}
+HEDEF_UZUN = int(os.environ.get('BUYUT_HEDEF', '1600'))     # buyutulmus gorselin uzun kenari
+EKRAN = int(os.environ.get('EKRAN_BOYU', '700'))            # urun sayfasinda gorselin gosterildigi genislik (karsilastirma icin)
+
+
+def _beyaz_zemin(im):
+    if im.mode in ('RGBA', 'LA', 'P'):
+        im = im.convert('RGBA'); z = Image.new('RGBA', im.size, (255, 255, 255, 255)); z.alpha_composite(im); im = z
+    return im.convert('RGB')
+
+
+def _klasik(im, hedef):
+    """yapay zekasiz: Lanczos buyutme + hafif keskinlestirme (uydurma ayrinti eklemez)"""
+    from PIL import ImageFilter
+    o = hedef / max(im.size)
+    b = im.resize((round(im.size[0] * o), round(im.size[1] * o)), Image.LANCZOS)
+    return b.filter(ImageFilter.UnsharpMask(radius=1.6, percent=70, threshold=2))
+
+
+_MODEL = {}
+
+
+def _model(ad):
+    if ad not in _MODEL:
+        import torch
+        from spandrel import ModelLoader
+        yol = os.path.join(os.path.expanduser('~'), '.cache', ad + '.pth')
+        if not os.path.exists(yol):
+            os.makedirs(os.path.dirname(yol), exist_ok=True)
+            r = requests.get(MODEL_URL[ad], timeout=300); r.raise_for_status()
+            open(yol, 'wb').write(r.content)
+        m = ModelLoader().load_from_file(yol)
+        try:
+            m.model.eval()
+        except Exception:
+            pass
+        torch.set_num_threads(max(1, os.cpu_count() or 2))
+        _MODEL[ad] = m
+    return _MODEL[ad]
+
+
+def _yapay_zeka(ad, im, hedef, parca=192, pay=12):
+    import torch
+    m = _model(ad)
+    x = torch.from_numpy(np.asarray(im, dtype=np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
+    _, _, h, w = x.shape
+    k = int(getattr(m, 'scale', 4) or 4)
+    cikis = torch.zeros((1, 3, h * k, w * k))
+    for y0 in range(0, h, parca):
+        for x0 in range(0, w, parca):
+            y1, x1 = min(y0 + parca, h), min(x0 + parca, w)
+            ya, xa, yb, xb = max(0, y0 - pay), max(0, x0 - pay), min(h, y1 + pay), min(w, x1 + pay)
+            with torch.inference_mode():
+                o = m(x[:, :, ya:yb, xa:xb])
+            cikis[:, :, y0 * k:y1 * k, x0 * k:x1 * k] = o[:, :, (y0 - ya) * k:(y1 - ya) * k, (x0 - xa) * k:(x1 - xa) * k]
+    a = (cikis.clamp(0, 1)[0].permute(1, 2, 0).numpy() * 255.0).round().astype(np.uint8)
+    b = Image.fromarray(a)
+    o = hedef / max(b.size)
+    return b.resize((round(b.size[0] * o), round(b.size[1] * o)), Image.LANCZOS) if o < 1 else b
+
+
+def buyut_deneme(urunler, cikti_dir):
+    """Secilen urunlerin Ticimax orijinallerini birkac yontemle buyutur; urun sayfasindaki gibi yan yana gosterir.
+    Magazada hicbir sey degistirmez."""
+    from PIL import ImageDraw
+    kl = os.path.join(cikti_dir, 'buyut'); os.makedirs(kl, exist_ok=True)
+    yontemler = ['klasik'] + list(MODEL_URL)
+    notlar, sayfa, sure = [], [], {}
+    for u in urunler:
+        r = al(u.get('tici_sayfa') or TICI_SITE + '/' + u['slug'], engel_bekle=True)
+        gal = tici_galeri(r.text) if r is not None and r.status_code == 200 else []
+        if not gal:
+            notlar.append(f'{u["sku"]}: Ticimax sayfası/görseli bulunamadı'); continue
+        for n, dosya in enumerate(gal[:4], 1):
+            rr = al(tici_url(dosya))
+            if rr is None or rr.status_code != 200:
+                continue
+            ham = Image.open(io.BytesIO(rr.content)); ham.load()
+            im = _beyaz_zemin(ham)
+            ad = f'{guvenli_ad(u["sku"])}_{n}'
+            im.save(os.path.join(kl, ad + '_0-ticimax.png'))
+            sonuc = {'ticimax (geriliyor)': im}
+            for y in yontemler:
+                t0 = time.time()
+                try:
+                    b = _klasik(im, HEDEF_UZUN) if y == 'klasik' else _yapay_zeka(y, im, HEDEF_UZUN)
+                except Exception as e:
+                    notlar.append(f'{y}: {str(e)[:200]}'); continue
+                sure.setdefault(y, []).append(round(time.time() - t0, 1))
+                b.save(os.path.join(kl, f'{ad}_{y}.jpg'), 'JPEG', quality=95, subsampling=0)
+                sonuc[y] = b
+            # yan yana: ustte urun sayfasindaki boyut (EKRAN px), altta en ayrintili bolge yakin plan
+            kutu = _detay_penceresi(im, max(48, min(im.size) // 4))
+            tuval = Image.new('RGB', (len(sonuc) * (EKRAN + 12) + 12, 24 + EKRAN + 8 + EKRAN + 30), 'white')
+            d = ImageDraw.Draw(tuval)
+            d.text((12, 6), f'{u["sku"]} - gorsel {n} (Ticimax {im.size[0]}x{im.size[1]})', fill=(3, 28, 55))
+            for i, (etiket, b) in enumerate(sonuc.items()):
+                x = 12 + i * (EKRAN + 12)
+                o = EKRAN / max(b.size)
+                g = b.resize((max(1, round(b.size[0] * o)), max(1, round(b.size[1] * o))), Image.BICUBIC)   # tarayicinin yaptigi gibi
+                tuval.paste(g, (x + (EKRAN - g.size[0]) // 2, 24 + (EKRAN - g.size[1]) // 2))
+                oo = b.size[0] / im.size[0]
+                kr = b.crop(tuple(round(v * oo) for v in kutu)).resize((EKRAN, EKRAN), Image.LANCZOS)
+                tuval.paste(kr, (x, 24 + EKRAN + 8))
+                d.text((x, tuval.size[1] - 22), etiket, fill=(3, 28, 55))
+            yol = f'karsilastir_{ad}.jpg'
+            tuval.save(os.path.join(kl, yol), 'JPEG', quality=92)
+            sayfa.append(f'<section><h2>{htmlmod.escape(u["ad"])} <small>{htmlmod.escape(u["sku"])} · görsel {n} · Ticimax {im.size[0]}×{im.size[1]}</small></h2>'
+                         f'<img src="{yol}" alt=""></section>')
+    with open(os.path.join(kl, 'buyutme-karsilastirma.html'), 'w', encoding='utf-8') as f:
+        f.write('<!doctype html><html lang="tr"><head><meta charset="utf-8"><title>Büyütme karşılaştırması</title><style>body{font-family:system-ui;margin:0;background:#f5f6f8;color:#031c37}'
+                'header{background:#031c37;color:#fff;padding:16px 24px}section{background:#fff;margin:16px;padding:16px;border-radius:12px}img{max-width:100%}h2{font-size:16px}small{color:#5b6474;font-weight:400}</style></head><body>'
+                '<header><b>Büyütme karşılaştırması</b> · üstte ürün sayfasındaki boyut, altta ayrıntı yakın plan · soldan: Ticimax (tarayıcı geriyor), klasik, yapay zekâ (foto), yapay zekâ (genel)</header>'
+                + ''.join(sayfa) + '</body></html>')
+    return {'notlar': notlar, 'sure_sn': sure, 'gorsel': len(sayfa)}
+
+
 # ------------------------------------------------------------------ kesif
 KALITE_BOYUTLAR = [540, 720, 1080, 1296, 1728, 2560]
 
@@ -1233,7 +1354,7 @@ def rapor_yaz(sonuclar, kesif_sonuc=None, aktarim=None):
 # ------------------------------------------------------------------ ana
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument('--mod', default='rapor', choices=['kesif', 'rapor', 'rapor-ve-yedek', 'aktar-deneme', 'aktar', 'geri-al'])
+    ap.add_argument('--mod', default='rapor', choices=['kesif', 'rapor', 'rapor-ve-yedek', 'aktar-deneme', 'aktar', 'geri-al', 'buyut-deneme'])
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--sku', default='')
     ap.add_argument('--is', dest='isci', type=int, default=int(os.environ.get('ISCI', '10')))
@@ -1262,6 +1383,12 @@ def main(argv=None):
         u['tici_sayfa'], u['sayfa_esleme'] = harita.bul(u['slug'], u['ad'])
     log(f'Ticimax sitemap: {harita.adet} adres; eşleşen ürün: {sum(1 for u in urunler if u["tici_sayfa"])}/{len(urunler)}')
 
+    if a.mod == 'buyut-deneme':
+        if not a.sku.strip():
+            sys.exit('buyut-deneme için stok kodu (sku) yazın')
+        b = buyut_deneme(urunler[:10], CIKTI)
+        log('BÜYÜTME:', json.dumps(b, ensure_ascii=False))
+        return b
     k = None
     if a.mod == 'kesif':
         k = kesif(ikas, urunler, harita=harita)
