@@ -1,0 +1,92 @@
+name: Görsel kalite kontrolü
+
+on:
+  workflow_dispatch:
+    inputs:
+      mod:
+        description: 'Ne yapılsın? (sırayla: kesif → rapor-ve-yedek → aktar-deneme → aktar)'
+        type: choice
+        default: kesif
+        options: [kesif, rapor, rapor-ve-yedek, aktar-deneme, aktar, geri-al]
+      sku:
+        description: 'Sadece bu stok kodları (virgülle ayırın; boş = hepsi)'
+        required: false
+        default: ''
+      limit:
+        description: 'En fazla kaç ürün (0 = hepsi)'
+        required: false
+        default: '0'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gorsel-kalite
+  cancel-in-progress: false
+
+jobs:
+  calis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      MOD: ${{ inputs.mod }}
+      SKU: ${{ inputs.sku }}
+      LIMIT: ${{ inputs.limit }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Kütüphaneler
+        run: pip install requests pillow numpy scikit-image openpyxl
+
+      - name: Güvenlik - aktar'dan önce aktar-deneme yapılmış mı?
+        if: inputs.mod == 'aktar' && inputs.sku == ''
+        run: |
+          if ! gh release view ticimax-gorsel-yedek --json assets -q '.assets[].name' 2>/dev/null | grep -q '^aktar-oncesi-'; then
+            echo "::error::Önce 'aktar-deneme' çalıştırın ve 3 ürünü kontrol edin."
+            exit 1
+          fi
+
+      - name: Geri alma kaydını indir
+        if: inputs.mod == 'geri-al'
+        run: |
+          mkdir -p aktar-oncesi aktar-zip
+          gh release download ticimax-gorsel-yedek --pattern 'aktar-oncesi-*.zip' --dir aktar-zip || true
+          for z in $(ls aktar-zip/*.zip 2>/dev/null | sort); do unzip -n -q "$z" -d aktar-oncesi; done
+          ls aktar-oncesi | head
+
+      - name: Çalıştır
+        env:
+          IKAS_MAGAZA: ${{ secrets.IKAS_MAGAZA }}
+          IKAS_CLIENT_ID: ${{ secrets.IKAS_CLIENT_ID }}
+          IKAS_CLIENT_SECRET: ${{ secrets.IKAS_CLIENT_SECRET }}
+        run: python gorsel_kalite.py --mod "$MOD" --limit "${LIMIT:-0}" --sku "$SKU"
+
+      - name: Raporu kaydet
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorsel-rapor-${{ inputs.mod }}
+          path: |
+            cikti/
+            aktar-oncesi/
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Yedekleri GitHub Releases'e koy
+        if: always() && (inputs.mod == 'rapor-ve-yedek' || inputs.mod == 'aktar-deneme' || inputs.mod == 'aktar')
+        run: |
+          gh release view ticimax-gorsel-yedek >/dev/null 2>&1 || gh release create ticimax-gorsel-yedek \
+            --title "Ticimax görsel yedeği" --notes "Ticimax orijinal ürün görselleri ve aktarım öncesi ikas kayıtları. SİLMEYİN."
+          if [ "$MOD" = "rapor-ve-yedek" ] && ls yedek/*.zip >/dev/null 2>&1; then
+            gh release upload ticimax-gorsel-yedek yedek/*.zip cikti/gorsel-sonuc.json --clobber
+          fi
+          if [ -d aktar-oncesi ] && [ -n "$(ls -A aktar-oncesi)" ]; then
+            z="aktar-oncesi-$(date -u +%Y%m%d-%H%M%S).zip"
+            (cd aktar-oncesi && zip -q -r "../$z" .)
+            gh release upload ticimax-gorsel-yedek "$z"
+          fi
