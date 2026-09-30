@@ -7,7 +7,7 @@ on:
         description: 'Ne yapılsın? (sırayla: kesif → rapor-ve-yedek → aktar-deneme → aktar)'
         type: choice
         default: kesif
-        options: [kesif, rapor, rapor-ve-yedek, aktar-deneme, aktar, geri-al]
+        options: [kesif, rapor, rapor-ve-yedek, aktar-deneme, aktar, geri-al, buyut-deneme]
       sku:
         description: 'Sadece bu stok kodları (virgülle ayırın; boş = hepsi)'
         required: false
@@ -42,6 +42,12 @@ jobs:
 
       - name: Kütüphaneler
         run: pip install requests pillow numpy scikit-image openpyxl
+
+      - name: Yapay zekâ kütüphaneleri (sadece büyütme)
+        if: startsWith(inputs.mod, 'buyut')
+        run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install spandrel
 
       - name: Güvenlik - aktar'dan önce aktar-deneme yapılmış mı?
         if: inputs.mod == 'aktar' && inputs.sku == ''
