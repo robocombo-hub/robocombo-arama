@@ -7,9 +7,11 @@
  * Ayarlar: window.RC_ARAMA = { veri, worker, sayfa, stil, populer, fiyatGoster }
  * v2.9: fiyatGoster ayari (varsayilan true). false yapilirsa (bayi sitesi) sonuclarda fiyat, indirim rozeti ve fiyata gore
  *       siralama gosterilmez; baska hicbir sey degismez. Perakende sitesinde davranis v2.8 ile aynidir.
+ * v2.10: dosya tarayici onbellekten cok hizli gelip sayfanin govdesi (body) olusmadan calisirsa hata verip sonuc sayfasini
+ *       bos birakiyordu ("Lorem ipsum"). Artik govde hazir olana kadar bekler.
  */
 (function(){
-  var V='[akilli-arama] v2.9';
+  var V='[akilli-arama] v2.10';
   if(window.__rcAra && window.__rcAra.dur) window.__rcAra.dur();
   var AYAR=Object.assign({
     veri:'',                       // https://<kullanici>.github.io/robocombo-arama
@@ -855,8 +857,9 @@ body.rc-arama-sayfasi main > :not(#rc-sonuc){display:none!important}
     [window,'scroll',konumla,true]
   ];
   olaylar.forEach(function(o){ o[0].addEventListener(o[1],o[2],o[3]); });
-  gozcu.observe(document.body,{childList:true,subtree:true});
-  adresKontrol();
+  /* dosya onbellekten erken gelirse <body> henuz yok: hazir olunca basla */
+  function basla(){ if(basla.ok||!document.body) return; basla.ok=1; gozcu.observe(document.body,{childList:true,subtree:true}); adresKontrol(); }
+  if(document.body) basla(); else { document.addEventListener('DOMContentLoaded',basla); window.addEventListener('load',basla); }
 
   window.__rcAra={motor:M, ayar:AYAR, ara:function(q){ return veriYukle().then(function(){ return anlamVektoru(q); }).then(function(e){ return M.ara(q,e); }); },
     dur:function(){
