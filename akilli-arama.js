@@ -4,14 +4,16 @@
  * - Yazarken acilan sonuc kutusu (% eslesme), "Bunu mu demek istediniz", son/populer aramalar
  * - /pages/arama?q=... sonuc sayfasi: filtre, siralama, "daha fazla"
  * - Ekranda gorunen urunlerin fiyat/stok bilgisi Worker (/canli) uzerinden ikas'tan ANLIK dogrulanir
- * Ayarlar: window.RC_ARAMA = { veri, worker, sayfa, stil, populer, fiyatGoster }
+ * Ayarlar: window.RC_ARAMA = { veri, worker, sayfa, stil, populer, fiyatGoster, fiyatListesi }
+ * v2.11: fiyatListesi ayari (bayi sitesi). Verilirse fiyat dizinden (perakende) HIC gosterilmez; sadece Worker'dan o fiyat
+ *       listesiyle anlik gelen fiyat gosterilir (gelene kadar bos). Fiyata gore siralama bu durumda kapali. Perakendede degisiklik yok.
  * v2.9: fiyatGoster ayari (varsayilan true). false yapilirsa (bayi sitesi) sonuclarda fiyat, indirim rozeti ve fiyata gore
  *       siralama gosterilmez; baska hicbir sey degismez. Perakende sitesinde davranis v2.8 ile aynidir.
  * v2.10: dosya tarayici onbellekten cok hizli gelip sayfanin govdesi (body) olusmadan calisirsa hata verip sonuc sayfasini
  *       bos birakiyordu ("Lorem ipsum"). Artik govde hazir olana kadar bekler.
  */
 (function(){
-  var V='[akilli-arama] v2.10';
+  var V='[akilli-arama] v2.11';
   if(window.__rcAra && window.__rcAra.dur) window.__rcAra.dur();
   var AYAR=Object.assign({
     veri:'',                       // https://<kullanici>.github.io/robocombo-arama
@@ -21,9 +23,12 @@
     populer:['Arduino Uno','Raspberry Pi 5','ESP32','Servo motor','Lipo pil','Sensör seti','Robot kiti','Jumper kablo'],
     whatsapp:'https://wa.me/905525507626',
     birlesik:false,                // true: adinda gecmeyen ama o kategorideki urunler 1. gruba katilir
-    fiyatGoster:true               // false: fiyat, indirim rozeti ve fiyat siralamasi gosterilmez (bayi sitesi)
+    fiyatGoster:true,              // false: fiyat, indirim rozeti ve fiyat siralamasi gosterilmez
+    fiyatListesi:''                // ikas fiyat listesi kimligi: fiyat sadece bu listeden ANLIK gosterilir (bayi sitesi)
   }, window.RC_ARAMA||{});
-  AYAR.veri=String(AYAR.veri||'').replace(/\/$/,''); AYAR.worker=String(AYAR.worker||'').replace(/\/$/,''); AYAR.fiyatGoster=AYAR.fiyatGoster!==false;
+  AYAR.veri=String(AYAR.veri||'').replace(/\/$/,''); AYAR.worker=String(AYAR.worker||'').replace(/\/$/,''); AYAR.fiyatGoster=AYAR.fiyatGoster!==false; AYAR.fiyatListesi=/^[0-9a-f-]{36}$/i.test(String(AYAR.fiyatListesi||''))?String(AYAR.fiyatListesi).toLowerCase():'';
+  var FIYAT_SIRA=AYAR.fiyatGoster&&!AYAR.fiyatListesi;   /* fiyat listesinde fiyatlar ekranda gorunen urunler icin sonradan gelir: fiyata gore siralanamaz */
+  function fiyatVar(p){ return !AYAR.fiyatListesi || !!p.lf; }   /* fiyat listesi modunda: sadece anlik gelen fiyat gosterilir */
 
   /* =============================== MOTOR =============================== */
   var TR={'ç':'c','ğ':'g','ı':'i','ö':'o','ş':'s','ü':'u','â':'a','î':'i','û':'u'};
@@ -458,14 +463,14 @@
     if(!ids.length) return;
     ids=ids.slice(0,50); var key=ids.join(',');
     if(canliUcus.has(key)) return; canliUcus.add(key);
-    fetch(AYAR.worker+'/canli?ids='+key).then(function(r){ if(!r.ok) throw r.status; return r.json(); })
+    fetch(AYAR.worker+'/canli?ids='+key+(AYAR.fiyatListesi?'&liste='+AYAR.fiyatListesi:'')).then(function(r){ if(!r.ok) throw r.status; return r.json(); })
       .then(function(j){
         if(!j || !j.u) throw 'canli yok';                              /* Worker henuz eski surum: dizin verisiyle devam */
-        var t=Date.now();
+        var t=Date.now(), listeli=!AYAR.fiyatListesi || j.liste===AYAR.fiyatListesi;   /* servis fiyat listesini uyguladi mi (eski servis uygulamaz) */
         ids.forEach(function(id){
           var p=M.urun(id), v=j.u[id]; if(!p) return;
           CANLI_T.set(id,t); if(v===undefined) return;
-          if(v){ p.fiyat=v[0]; p.eski=v[1]; p.stok=v[2]; } else { p.stok=0; }   /* yayindan kalkmis: tukendi */
+          if(v){ if(listeli){ p.fiyat=v[0]; p.eski=v[1]; p.lf=1; } p.stok=v[2]; } else { p.stok=0; }   /* yayindan kalkmis: tukendi */
         });
       })
       .catch(function(){ canliKapali=Date.now()+60000; })           /* Worker/ikas cevap vermezse 1 dk dizin verisiyle devam */
@@ -658,7 +663,7 @@ body.rc-arama-sayfasi main > :not(#rc-sonuc){display:none!important}
       (g?'<img src="'+g+'" alt="" loading="lazy">':'<div class="rc-ara-bos-g"></div>')+
       '<div><div class="rc-ara-ad">'+(tk?vurgula(p.ad,tk):esc(p.ad))+'</div><div class="rc-ara-alt">'+
       (x.eslesme?'<span class="rc-es">%'+x.eslesme+' eşleşme</span>':'')+esc(p.marka||'')+(p.stok?'':'<span class="rc-tuk">Tükendi</span>')+'</div></div>'+
-      (AYAR.fiyatGoster?'<div class="rc-ara-fiyat'+(canliTaze(p)?'':' rc-bekle')+'">'+(p.eski?'<s>'+fiyat(p.eski)+'</s>':'')+fiyat(p.fiyat)+'</div>':'')+'</a>';
+      (AYAR.fiyatGoster?(fiyatVar(p)?'<div class="rc-ara-fiyat'+(canliTaze(p)?'':' rc-bekle')+'">'+(p.eski?'<s>'+fiyat(p.eski)+'</s>':'')+fiyat(p.fiyat)+'</div>':'<div class="rc-ara-fiyat rc-bekle"></div>'):'')+'</a>';
   }
   function aiDurum(s){ return '<span class="rc-ara-ai '+(s==='acik'?'acik':s==='bekle'?'bekle':'')+'"><i></i>'+(s==='acik'?'Akıllı arama':s==='bekle'?'Anlam aranıyor…':'Kelime araması')+'</span>'; }
   function bosCiz(){
@@ -743,8 +748,8 @@ body.rc-arama-sayfasi main > :not(#rc-sonuc){display:none!important}
       return true;
     });
     if(SAY.sira==='satis') l=l.slice().sort(function(a,b){ return b.p.satis-a.p.satis; });
-    else if(AYAR.fiyatGoster && SAY.sira==='artan') l=l.slice().sort(function(a,b){ return a.p.fiyat-b.p.fiyat; });
-    else if(AYAR.fiyatGoster && SAY.sira==='azalan') l=l.slice().sort(function(a,b){ return b.p.fiyat-a.p.fiyat; });
+    else if(FIYAT_SIRA && SAY.sira==='artan') l=l.slice().sort(function(a,b){ return a.p.fiyat-b.p.fiyat; });
+    else if(FIYAT_SIRA && SAY.sira==='azalan') l=l.slice().sort(function(a,b){ return b.p.fiyat-a.p.fiyat; });
     return l;
   }
   function sayac(liste,al){
@@ -752,12 +757,12 @@ body.rc-arama-sayfasi main > :not(#rc-sonuc){display:none!important}
     return Array.from(m.entries()).sort(function(a,b){ return b[1]-a[1]; }).slice(0,10);
   }
   function kart(x,tk){
-    var p=x.p, g=gorsel(p,540), ind=p.eski?Math.round((p.eski-p.fiyat)/p.eski*100):0;
+    var p=x.p, g=gorsel(p,540), ind=p.eski?Math.round((p.eski-p.fiyat)/p.eski*100):0, fv=fiyatVar(p);
     return '<a class="rc-kart'+(p.stok?'':' tukendi')+'" href="/'+esc(p.slug)+'" data-yol="/'+esc(p.slug)+'">'+
       '<div class="rc-kart-g">'+(g?'<img src="'+g+'" alt="" loading="lazy">':'')+
         (x.eslesme?'<span class="rc-es">%'+x.eslesme+' eşleşme</span>':'')+(p.stok?'':'<span class="rc-kart-tuk">Tükendi</span>')+'</div>'+
       '<div class="rc-kart-b"><div class="rc-kart-marka">'+esc(p.marka||'')+'</div><div class="rc-kart-ad">'+vurgula(p.ad,tk)+'</div>'+
-      (AYAR.fiyatGoster?'<div class="rc-kart-f'+(canliTaze(p)?'':' rc-bekle')+'">'+(ind>0?'<span class="rc-kart-ind">%'+ind+'</span>':'')+'<div>'+(p.eski?'<s>'+fiyat(p.eski)+'</s>':'')+'<b>'+fiyat(p.fiyat)+'</b></div></div>':'')+'</div></a>';
+      (AYAR.fiyatGoster?(fv?'<div class="rc-kart-f'+(canliTaze(p)?'':' rc-bekle')+'">'+(ind>0?'<span class="rc-kart-ind">%'+ind+'</span>':'')+'<div>'+(p.eski?'<s>'+fiyat(p.eski)+'</s>':'')+'<b>'+fiyat(p.fiyat)+'</b></div></div>':'<div class="rc-kart-f rc-bekle"></div>'):'')+'</div></a>';
   }
   function sayfaIcerik(){
     var kok=sayfaKok(), s=SAY.s, q=SAY.q; if(!kok||!s) return;
@@ -777,7 +782,7 @@ body.rc-arama-sayfasi main > :not(#rc-sonuc){display:none!important}
     if(katlar.length>1) h+='<div class="rc-s-satir"><div class="rc-s-etiket">Kategori</div><div class="rc-s-cipler">'+katlar.map(function(k){ return cip('kat',k[0],k[1]); }).join('')+'</div></div>';
     if(markalar.length>1) h+='<div class="rc-s-satir"><div class="rc-s-etiket">Marka</div><div class="rc-s-cipler">'+markalar.map(function(k){ return cip('marka',k[0],k[1]); }).join('')+'</div></div>';
     h+='<div class="rc-s-satir"><div class="rc-s-sag"><label><input type="checkbox" data-f="stok"'+(SAY.stok?' checked':'')+'> Sadece stoktakiler</label>'+
-       '<select data-f="sira"><option value="onerilen">Önerilen</option><option value="satis">Çok satanlar</option>'+(AYAR.fiyatGoster?'<option value="artan">Fiyat: artan</option><option value="azalan">Fiyat: azalan</option>':'')+'</select></div></div></div>';
+       '<select data-f="sira"><option value="onerilen">Önerilen</option><option value="satis">Çok satanlar</option>'+(FIYAT_SIRA?'<option value="artan">Fiyat: artan</option><option value="azalan">Fiyat: azalan</option>':'')+'</select></div></div></div>';
     var l=filtreli();
     h+=l.length?'<div class="rc-s-izgara">'+l.slice(0,SAY.adet).map(function(x){ return kart(x,s.kelimeler); }).join('')+'</div>':'<div class="rc-s-bos">Seçtiğiniz filtrelere uygun ürün yok.</div>';
     if(l.length>SAY.adet) h+='<button type="button" class="rc-s-daha">Daha fazla göster ('+(l.length-SAY.adet)+')</button>';
