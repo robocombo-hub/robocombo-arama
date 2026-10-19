@@ -2,7 +2,7 @@ name: Arama dizinini güncelle
 
 on:
   schedule:
-    - cron: '30 0 * * *'      # her gece 03:30 (Türkiye saati)
+                 - cron: '15 * * * *'      # her saat başı (:15'te)
   workflow_dispatch: {}        # Actions sekmesinden elle de çalıştırılabilir
   push:
     branches: [main]
